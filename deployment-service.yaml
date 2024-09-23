@@ -26,6 +26,8 @@ kind: Service
 metadata:
   name: kamaji-tcp-health-exporter-service
     #  namespace: cattle-monitoring-system
+  labels:
+    app: kamaji-tcp-health-exporter
 spec:
   type: ClusterIP
   selector:
