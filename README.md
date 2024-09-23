@@ -1,1 +1,1 @@
-# kamaji-tcp-health-expoter
+# kamaji-tcp-health-exporter
