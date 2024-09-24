@@ -25,8 +25,8 @@ var (
         []string{"name", "ip"},
     )
 
-    stopChans = make(map[string]chan bool) // Store channels to stop old goroutines
-    mu        sync.Mutex                   // Mutex to protect concurrent access to stopChans
+    stopChans sync.Map
+    services  sync.Map
 )
 
 func init() {
@@ -43,19 +43,19 @@ func getServiceIPs() (map[string]string, error) {
     }
 
     scanner := bufio.NewScanner(&out)
-    services := make(map[string]string)
+    serviceMap := make(map[string]string)
     for scanner.Scan() {
         line := scanner.Text()
         parts := strings.Fields(line)
         if len(parts) == 2 && parts[1] != "<none>" {
-            services[parts[0]] = parts[1]
+            serviceMap[parts[0]] = parts[1]
         }
     }
-    return services, nil
+    return serviceMap, nil
 }
 
 // Check API health and response code
-func checkAPI(name, ip string, stopChan chan bool) {
+func checkAPI(name, ip string, stopChan <-chan struct{}) {
     url := fmt.Sprintf("https://%s:6443", ip)
     tr := &http.Transport{
         TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -69,12 +69,14 @@ func checkAPI(name, ip string, stopChan chan bool) {
         select {
         case <-stopChan:
             log.Printf("Stopping monitoring for %s (%s)\n", name, ip)
+            apiHealthStatus.DeleteLabelValues(name, ip)
+            services.Delete(name)
             return
         case <-ticker.C:
             resp, err := client.Get(url)
             if err != nil {
-                apiHealthStatus.WithLabelValues(name, ip).Set(0)
                 log.Printf("Error connecting to %s (%s): %v\n", name, ip, err)
+                apiHealthStatus.WithLabelValues(name, ip).Set(0)
                 continue
             }
             apiHealthStatus.WithLabelValues(name, ip).Set(1)
@@ -87,31 +89,32 @@ func checkAPI(name, ip string, stopChan chan bool) {
 // Update the services being monitored, start new goroutines if needed, and stop old ones
 func updateServices() {
     for {
-        services, err := getServiceIPs()
+        serviceMap, err := getServiceIPs()
         if err != nil {
             log.Printf("Error getting service IPs: %v\n", err)
             time.Sleep(1 * time.Minute)
             continue
         }
 
-        mu.Lock()
         // Stop goroutines for services that no longer exist
-        for name, stopChan := range stopChans {
-            if _, exists := services[name]; !exists {
-                close(stopChan)
-                delete(stopChans, name)
+        stopChans.Range(func(key, value interface{}) bool {
+            name := key.(string)
+            if _, exists := serviceMap[name]; !exists {
+                close(value.(chan struct{}))
+                stopChans.Delete(name)
+                apiHealthStatus.DeleteLabelValues(name, serviceMap[name])
             }
-        }
+            return true
+        })
 
         // Start new goroutines for services that are not being monitored yet
-        for name, ip := range services {
-            if _, exists := stopChans[name]; !exists {
-                stopChan := make(chan bool)
-                stopChans[name] = stopChan
+        for name, ip := range serviceMap {
+            if _, exists := stopChans.Load(name); !exists {
+                stopChan := make(chan struct{})
+                stopChans.Store(name, stopChan)
                 go checkAPI(name, ip, stopChan)
             }
         }
-        mu.Unlock()
 
         time.Sleep(1 * time.Minute) // Check for updates every minute
     }
