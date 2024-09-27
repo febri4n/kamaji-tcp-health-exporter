@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: kamaji-tcp-health-exporter
-        image: febri4n/kamaji-tcp-health-exporter:v1
+        image: febri4n/kamaji-tcp-health-exporter:v4
         ports:
         - containerPort: 8080
 ---
